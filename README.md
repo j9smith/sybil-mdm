@@ -1,3 +1,5 @@
+![Sampling demo](sampling.gif)
+
 # SybilMDM
 
 A masked diffusion model for language modelling, based on the LLaDA paper (Nie et al., 2025).
