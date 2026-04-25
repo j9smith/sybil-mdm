@@ -1,9 +1,10 @@
 import tiktoken
 import torch
 import os, time
+import torch.nn.functional as F
 from model import SybilMDM
 from params import (VOCAB_SIZE, DEVICE, ANSWER_LENGTH, N_ATTENTION_HEADS,
-                    SAMPLING_STEPS, MASK_TOKEN_ID, FFN_DIMS,
+                    SAMPLING_STEPS, MASK_TOKEN_ID, FFN_DIMS, TEMPERATURE,
                     N_TRANSFORMER_BLOCKS, D_MODEL, T_EMB_DIMS)
 
 def main():
@@ -18,7 +19,7 @@ def main():
     t_emb_dims=T_EMB_DIMS
     ).to(DEVICE)
 
-    ckpt = torch.load("weights/ckpt_1000.pt")
+    ckpt = torch.load("weights/ckpt_50000.pt")
     model.load_state_dict(ckpt["model"])
     model.eval()
 
@@ -32,8 +33,9 @@ def main():
     while t > 0:
         s = t - (1.0 / SAMPLING_STEPS)
 
-        logits = model(r_t.unsqueeze(0), t.unsqueeze(0))
-        r0 = torch.argmax(logits, dim=-1).squeeze(0)
+        logits = model(r_t.unsqueeze(0), t.view(1, 1))
+        probs = F.softmax(logits / TEMPERATURE, dim=-1)
+        r0 = torch.multinomial(probs.view(-1, probs.shape[-1]), 1).view(-1)
 
         unmasked = (r_t != MASK_TOKEN_ID)
         masked = (r_t == MASK_TOKEN_ID)
@@ -59,8 +61,10 @@ def main():
 
         text = "".join(output)
 
-        print(text)
+        # tokens = [tok for tok in r0.tolist() if tok != MASK_TOKEN_ID]
+        # text = enc.decode(tokens)
 
+        print(text)
         current_step += 1
 
 if __name__ == "__main__":
