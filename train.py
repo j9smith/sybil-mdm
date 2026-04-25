@@ -1,5 +1,6 @@
 import os
 import time
+import argparse
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
@@ -13,6 +14,10 @@ WARMUP_STEPS = 2000
 MAX_LR = 4e-4
 
 def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--ckpt", type=str, required=False)
+    args = p.parse_args()
+
     os.makedirs("weights", exist_ok=True)
     writer = SummaryWriter("runs/sybil_mdm")
 
@@ -34,17 +39,28 @@ def main():
     ).to(DEVICE)
 
     optimiser = torch.optim.AdamW(model.parameters(), lr=MAX_LR, weight_decay=0.1)
-
     scheduler = LambdaLR(optimiser, lr_lambda=lambda step: min(1.0, (step + 1) / WARMUP_STEPS))
+
+    current_step = 0
+    starting_step = 0
+
+    if args.ckpt is not None:
+        print(f"Loading checkpoint: {args.ckpt}")
+        checkpoint = torch.load(args.ckpt, map_location="cuda")
+        model.load_state_dict(checkpoint["model"], strict=True)
+        optimiser.load_state_dict(checkpoint["optimiser"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        starting_step = checkpoint["step"]
+        current_step = checkpoint["step"]
+        print("Loaded.")
 
     model.train()
 
-    current_step = 0
     running_loss = 0.0
     start_time = time.time()
 
     it = iter(train_loader)
-    while current_step <= STEPS:
+    while current_step <= STEPS + starting_step:
         try:
             batch = next(it)
         except StopIteration:
