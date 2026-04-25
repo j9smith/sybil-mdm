@@ -2,16 +2,22 @@ import os
 import time
 import torch
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.tensorboard import SummaryWriter
 from model import SybilMDM
-from params import (DEVICE, BATCH_SIZE, STEPS, MASK_TOKEN_ID,
+from params import (DEVICE, BATCH_SIZE, STEPS, MASK_TOKEN_ID, ACCUMULATION_STEPS,
                     VOCAB_SIZE, LOG_EVERY, CKPT_EVERY, N_TRANSFORMER_BLOCKS,
                     D_MODEL, N_ATTENTION_HEADS, FFN_DIMS, T_EMB_DIMS)
 
+WARMUP_STEPS = 2000
+MAX_LR = 4e-4
+
 def main():
     os.makedirs("weights", exist_ok=True)
-    data = torch.load("wikitext103_tokenised.pt")
+    writer = SummaryWriter("runs/sybil_mdm")
 
-    train_dataset = torch.utils.data.TensorDataset(data["train"][:1000])
+    data = torch.load("wikitext103_tokenised.pt")
+    train_dataset = torch.utils.data.TensorDataset(data["train"])
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
@@ -27,7 +33,9 @@ def main():
     t_emb_dims=T_EMB_DIMS
     ).to(DEVICE)
 
-    optimiser = torch.optim.AdamW(model.parameters(), lr=4e-4)
+    optimiser = torch.optim.AdamW(model.parameters(), lr=MAX_LR, weight_decay=0.1)
+
+    scheduler = LambdaLR(optimiser, lr_lambda=lambda step: min(1.0, (step + 1) / WARMUP_STEPS))
 
     model.train()
 
@@ -43,24 +51,30 @@ def main():
             it = iter(train_loader)
             batch = next(it)
 
-        optimiser.zero_grad()
-
         x_original = batch[0].to(DEVICE)
         t = torch.rand(x_original.shape[0], device=DEVICE).unsqueeze(-1)
         r = torch.rand(x_original.shape, device=DEVICE)
 
-        mask = (r > t)
+        mask = (r < t)
 
         x_masked = x_original.clone()
         x_masked[mask] = MASK_TOKEN_ID
 
         logits = model(x_masked, t)
         loss = F.cross_entropy(logits[mask], x_original[mask])
+        loss = loss / ACCUMULATION_STEPS
         loss.backward()
-        optimiser.step()
+
+        if current_step % ACCUMULATION_STEPS == 0:
+            optimiser.step()
+            scheduler.step()
+            optimiser.zero_grad()
 
         running_loss += loss.item()
         current_step += 1
+
+        writer.add_scalar("train/loss", loss.item(), current_step)
+        writer.add_scalar("train/lr", scheduler.get_last_lr()[0], current_step)
 
         if current_step % LOG_EVERY == 0:
             avg_loss = running_loss / LOG_EVERY
@@ -74,8 +88,10 @@ def main():
                 "step": current_step,
                 "model": model.state_dict(),
                 "optimiser": optimiser.state_dict(),
+                "scheduler": scheduler.state_dict(),
             }, f"weights/ckpt_{current_step}.pt")
 
+    writer.close()
 
 if __name__ == "__main__":
     main()
